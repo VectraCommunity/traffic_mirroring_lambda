@@ -78,7 +78,7 @@ def lambda_handler(event, context):
                     break
             if not already_tapped:
                 # create mirror session for ec2 instance
-                print('Create new Traffic Mirror Session for EC2 instance ID: ' + instance_id)
+                logger.info('Create new Traffic Mirror Session for EC2 instance ID: ' + instance_id)
                 create_traffic_mirror_session_response = ec2.create_traffic_mirror_session(
                     NetworkInterfaceId = network_interface_id,
                     TrafficMirrorTargetId = traffic_mirror_target_id,
@@ -98,6 +98,6 @@ def lambda_handler(event, context):
                         }  
                         ]
                     )
-                print(create_traffic_mirror_session_response)
+                logger.debug(create_traffic_mirror_session_response)
         else:
             logger.info('EC2 instance is not running: skipping..')
