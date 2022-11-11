@@ -1,0 +1,132 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+Description: Template to deploy all resources needed for automatically enabling traffic mirroring on all EC2 instances of a VPC.
+
+Parameters:
+  TrafficMirroringTargetID:
+    Type: String
+    Description: ID of the traffic mirroring target that will be  configured for all sessions.
+    AllowedPattern: "tmt-[0-9,a-f]{17}"
+    ConstraintDescription: "This must be a valid AWS traffic mirroring target ID."
+  ExcludedTagKey:
+    Type: String
+    Description: Key of the Tag for EC2 instances to automatically ignore (typically the Vectra sensors themselves).
+    Default: "vectra"
+  ExcludedTagValue: 
+    Type: String
+    Description: Value of the Tag for EC2 instances to automatically ignore (typically the Vectra sensors themselves)
+    Default: "sensor"
+  ExcludeEKS: 
+    Type: String
+    Description: Whether to exclude EC2 instances part of an EKS cluster automatically.
+    Default: true
+    AllowedValues: [true, false]
+
+Resources:
+  PassthroughMirroringFilter:
+    Type: AWS::EC2::TrafficMirrorFilter
+    Properties: 
+      Description: "Passthrough filter for Vectra"
+      NetworkServices: 
+        - amazon-dns
+      Tags:
+      - Key: "Name"
+        Value: "Vectra-Passthrough"
+  PassthroughMirroringFilterRuleIngress:
+    Type: AWS::EC2::TrafficMirrorFilterRule
+    Properties: 
+      DestinationCidrBlock: "0.0.0.0/0"
+      RuleAction: "accept"
+      RuleNumber: 100
+      SourceCidrBlock:  "0.0.0.0/0"
+      TrafficDirection: "ingress"
+      TrafficMirrorFilterId: !Ref PassthroughMirroringFilter
+  PassthroughMirroringFilterRuleEgress:
+    Type: AWS::EC2::TrafficMirrorFilterRule
+    Properties: 
+      DestinationCidrBlock: "0.0.0.0/0"
+      RuleAction: "accept"
+      RuleNumber: 100
+      SourceCidrBlock:  "0.0.0.0/0"
+      TrafficDirection: "egress"
+      TrafficMirrorFilterId: !Ref PassthroughMirroringFilter
+  LambdaExecutionRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: VectraTrafficMirroringPolicy
+          PolicyDocument: 
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeInstances
+                  - ec2:DescribeTrafficMirrorFilters
+                  - ec2:DescribeNetworkInterfaces
+                  - ec2:DescribeTrafficMirrorTargets
+                  - ec2:DescribeTrafficMirrorSessions
+                  - ec2:DescribeSecurityGroups
+                  - ec2:DescribeNetworkAcls
+                  - ec2:CreateTrafficMirrorSession
+                  - ec2:CreateTags
+                Resource: "*"
+  TrafficMirroringLambda:
+    Type: "AWS::Lambda::Function"
+    Properties:
+      Handler: traffic_mirroring_lambda.lambda_handler
+      Runtime: python3.9
+      Code:
+        S3Bucket: "ahs-test-bucket"
+        S3Key: !Sub "traffic_mirroring_lambda.zip"
+      MemorySize: 128
+      Timeout: 30
+      Role: !Sub ${LambdaExecutionRole.Arn}
+      Environment:
+        Variables:
+          TRAFFIC_MIRROR_TARGET_ID: !Ref TrafficMirroringTargetID
+          TRAFFIC_MIRROR_FILTER_ID: !Ref PassthroughMirroringFilter
+          VECTRA_SENSOR_TAG_KEY: !Ref ExcludedTagKey
+          VECTRA_SENSOR_TAG_VALUE: !Ref ExcludedTagValue
+          EXCLUDE_EKS: !Ref ExcludeEKS
+  EventRule: 
+    Type: AWS::Events::Rule
+    Properties: 
+      Description: "EventRule"
+      EventPattern: 
+        source: 
+          - "aws.ec2"
+        detail-type: 
+          - "EC2 Instance State-change Notification"
+        detail: 
+          state: 
+            - "running"
+      State: "ENABLED"
+      Targets: 
+        - 
+          Arn: 
+            Fn::GetAtt: 
+              - "TrafficMirroringLambda"
+              - "Arn"
+          Id: "TargetFunctionV1"
+  PermissionForEventsToInvokeLambda: 
+    Type: AWS::Lambda::Permission
+    Properties: 
+      FunctionName: 
+        Ref: "TrafficMirroringLambda"
+      Action: "lambda:InvokeFunction"
+      Principal: "events.amazonaws.com"
+      SourceArn: 
+        Fn::GetAtt: 
+          - "EventRule"
+          - "Arn"     

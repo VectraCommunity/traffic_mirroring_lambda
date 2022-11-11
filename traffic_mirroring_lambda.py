@@ -7,7 +7,6 @@ are created for all existing instances on the first deployment of this lambda.
 Refer to the REAMDE for more informations. 
 """
 
-import json
 import boto3
 import os
 import logging
@@ -32,14 +31,13 @@ traffic_mirror_target_id = os.environ.get('TRAFFIC_MIRROR_TARGET_ID')
 traffic_mirror_filter_id = os.environ.get('TRAFFIC_MIRROR_FILTER_ID')
 vectra_sensor_tag_key = os.environ.get('VECTRA_SENSOR_TAG_KEY')
 vectra_sensor_tag_value = os.environ.get('VECTRA_SENSOR_TAG_VALUE')
+exclude_eks_traffic = os.environ.get('ExcludeEKS')
+
 
 
 def lambda_handler(event, context):
-
-    event_json = json.dumps(event, indent=2)
-    # get state of ec2 instance
+    # Get state of ec2 instance
     state = event['detail']['state']
-
     # terminated: When you delete a network interface that is a traffic mirror source,
     #             the traffic mirror sessions that are associated with the source are
     #             automatically deleted.
@@ -48,18 +46,21 @@ def lambda_handler(event, context):
         logger.info('Ignore EC2 state change event: ' + state)
         return True
 
-    # get ec2 instance details
+    # Get ec2 instance details
     ec2 = boto3.client('ec2')
     instance_id = event['detail']['instance-id']
     ec2_described = ec2.describe_instances(InstanceIds=[instance_id])
     network_interface_list = ec2_described['Reservations'][0]['Instances'][0]['NetworkInterfaces']
 
-    # check if instance is vectra sensor, we do not want to mirror sensor traffic
+    # Check if instance is not to be mirrored based on tags
     if 'Tags' in ec2_described['Reservations'][0]['Instances'][0]:
         for tag in ec2_described['Reservations'][0]['Instances'][0]['Tags']:
             if vectra_sensor_tag_key in tag['Key'] and vectra_sensor_tag_value in tag['Value']:
                 logger.info('This is a Vectra Sensor (' + instance_id + ') and doesn\'t need a Traffic Mirror Session')
-                return #exit function
+                return
+            elif exclude_eks_traffic == "true" and (tag['Key'] == "eks:cluster-name" or tag['Key'] == "eks:nodegroup-name"):
+                logger.info('This is an EKS worker node (' + instance_id + ') and doesn\'t need a Traffic Mirror Session')
+                return
 
     logger.info("Processing a total of {} ENIs".format(str(len(network_interface_list))))
     # get all mirror sessions
@@ -101,3 +102,4 @@ def lambda_handler(event, context):
                 logger.debug(create_traffic_mirror_session_response)
         else:
             logger.info('EC2 instance is not running: skipping..')
+
